@@ -120,9 +120,10 @@ verifications CNG answered itself, and whether FIPS-approved mode is on.
 
 ## Status
 
-**Not yet run on Windows.** The portable unit tests pass on macOS, and the Windows code paths
-(including the tests) type-check against `x86_64-pc-windows-msvc`, but nothing that calls bcrypt.dll
-has executed. The first Windows CI run is the first real test. Not yet published to crates.io.
+Run in CI on GitHub's hosted Windows runner against rust-pki's PKITS collections: CNG answered all
+389 RSA and 388 ECDSA verifications that software accepted, and both RSASSA-PSS ones, with no
+disagreements in either interface, and declined every ML-DSA one. Changed messages and changed
+signatures were rejections, not refusals. The runner was not in FIPS-approved mode.
 
 certval is consumed from crates.io. A commented `[patch.crates-io]` line in `Cargo.toml` redirects
 the dependency to a local checkout for developing both crates together.
