@@ -364,8 +364,7 @@ fn fips_mode_can_be_queried() {
 fn hashes_match_software() {
     let pe = pe();
     let crypto = CngCrypto::new();
-    let cases: [(ObjectIdentifier, Vec<u8>); 4] = [
-        (PKIXALG_SHA1, sha1_of(MESSAGE)),
+    let cases: [(ObjectIdentifier, Vec<u8>); 3] = [
         (PKIXALG_SHA256, sha2::Sha256::digest(MESSAGE).to_vec()),
         (PKIXALG_SHA384, sha2::Sha384::digest(MESSAGE).to_vec()),
         (PKIXALG_SHA512, sha2::Sha512::digest(MESSAGE).to_vec()),
@@ -374,11 +373,17 @@ fn hashes_match_software() {
         let got = crypto.calculate_hash(&pe, &plain(oid), MESSAGE).unwrap();
         assert_eq!(got, expected, "{oid}");
     }
-}
 
-/// SHA-1 from certval's software hash, so the test needs no SHA-1 crate of its own.
-fn sha1_of(data: &[u8]) -> Vec<u8> {
-    certval::calculate_hash_rust_crypto(&pe(), &plain(PKIXALG_SHA1), data).unwrap()
+    // certval's software hash has no SHA-1 to compare against, so SHA-1 is checked against the
+    // FIPS 180 example instead: SHA-1("abc").
+    let sha1_abc = [
+        0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50, 0xc2,
+        0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
+    ];
+    let got = crypto
+        .calculate_hash(&pe, &plain(PKIXALG_SHA1), b"abc")
+        .unwrap();
+    assert_eq!(got, sha1_abc);
 }
 
 #[test]
