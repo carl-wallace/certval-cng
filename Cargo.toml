@@ -1,0 +1,49 @@
+[package]
+name = "certval-cng"
+version = "0.1.0"
+description = """
+Windows CNG crypto provider for certval. Performs message digest calculation and certificate
+signature verification with Cryptography API: Next Generation, so certification path validation on
+Windows can use the operating system's validated cryptographic module rather than an in-process
+software implementation.
+"""
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/carl-wallace/certval-cng"
+categories = ["cryptography"]
+keywords = ["x509", "certval", "windows", "cng"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.88"
+
+[features]
+default = []
+# Enables certval's software ML-DSA implementation. The provider needs nothing from it, since it
+# declines ML-DSA, but without it the ML-DSA collection test has no software verdict to compare
+# against and every pair is "no opinion".
+pqc = ["certval/pqc"]
+
+[dependencies]
+certval = { version = "0.2.0-rc.1", default-features = false, features = ["std", "rsa"] }
+
+const-oid = { version = "0.10.2", features = ["db"] }
+der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
+spki = "0.8.0"
+
+log = "0.4.33"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+x509-cert = { version = "0.3.0", features = ["hazmat"] }
+p256 = { version = "0.14.0", features = ["ecdsa"] }
+p384 = { version = "0.14.0", features = ["ecdsa"] }
+p521 = { version = "0.14.0", features = ["ecdsa"] }
+sha2 = "0.11.0"
+signature = "3.0.0"
+
+# Uncomment while developing certval and this crate together: it redirects the crates.io dependency
+# above to the local checkout, so edits take effect without a publish. Leave it commented on anything
+# that is committed, or the build depends on a path that only exists here.
+# [patch.crates-io]
+# certval = { path = "../rust-pki/certval" }

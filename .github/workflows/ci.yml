@@ -1,0 +1,111 @@
+name: certval-cng
+
+on:
+  pull_request:
+  push:
+    branches: main
+  # Manual re-runs via `gh workflow run ci.yml` (available once this file is
+  # on the default branch).
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: certval-cng
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings"
+
+# Cancels CI jobs when new commits are pushed to a PR branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        rust:
+          - 1.88.0 # MSRV, matching certval
+          - stable
+    steps:
+      # certval comes from crates.io, so no sibling checkout is needed here.
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cng
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - run: cargo build --all-targets
+      - run: cargo build --all-targets --all-features
+
+  # The algorithm table and the key blob encoding are portable and unit tested on every platform,
+  # which also keeps the crate building off Windows, so that a multi-platform workspace can depend
+  # on it unconditionally.
+  test-portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cng
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+
+  # Lints run on stable only, deliberately not across the build matrix: clippy's diagnostics differ
+  # between toolchains, so linting against the MSRV pin reports on a compiler nobody develops with.
+  # The pre-commit hook runs the same commands locally so they fail before a push rather than in
+  # CI. It is an early warning, not a replacement for these jobs.
+  lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cng
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Not installed by default.
+          components: clippy
+      - run: cargo clippy --all-targets
+      - run: cargo clippy --all-targets --all-features
+
+  # A job of its own so it can be a required check without making clippy one: each Rust release
+  # adds lints, and a required clippy would fail unrelated pull requests.
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cng
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Not installed by default.
+          components: rustfmt
+      - run: cargo fmt --check
+
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cng
+      # The certificate collections live in rust-pki's test data and are pointed at rather than
+      # copied, which is what the environment variables below are for. Pinned to the commit the
+      # certval release in Cargo.toml was published from (certval-v0.2.0-rc.1), so the certificates
+      # and the library under test stay in lockstep; bump both together.
+      - uses: actions/checkout@v7
+        with:
+          repository: carl-wallace/rust-pki
+          ref: 93104f49a8083f1e527e3b4e830581b917674e2f
+          path: rust-pki
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run the unit, signature and collection tests
+        env:
+          CERTVAL_CNG_RSA_CERTS: ${{ github.workspace }}/rust-pki/certval/tests/examples/PKITS_data_2048/certs
+          CERTVAL_CNG_ECDSA_CERTS: ${{ github.workspace }}/rust-pki/certval/tests/examples/PKITS_data_p256/certs
+          CERTVAL_CNG_PSS_CERTS: ${{ github.workspace }}/rust-pki/certval/tests/examples/rsapss
+          CERTVAL_CNG_MLDSA_CERTS: ${{ github.workspace }}/rust-pki/certval/tests/examples/pkits_ml_dsa_44/certs
+        # --nocapture so the per-family tallies and the FIPS-mode line land in the log: they are the
+        # only way to see how much CNG answered, as opposed to software.
+        run: cargo test --features pqc -- --nocapture
