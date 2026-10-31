@@ -1,6 +1,6 @@
 [package]
 name = "certval-cng"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 description = """
 Windows CNG crypto provider for certval. Performs message digest calculation and certificate
 signature verification with Cryptography API: Next Generation, so certification path validation on
@@ -14,6 +14,7 @@ keywords = ["x509", "certval", "windows", "cng"]
 readme = "README.md"
 edition = "2021"
 rust-version = "1.88"
+include = ["src/**/*.rs", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [features]
 default = []
@@ -41,6 +42,13 @@ p384 = { version = "0.14.0", features = ["ecdsa"] }
 p521 = { version = "0.14.0", features = ["ecdsa"] }
 sha2 = "0.11.0"
 signature = "3.0.0"
+
+[package.metadata.docs.rs]
+# The provider exists only on Windows.
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 # Uncomment while developing certval and this crate together: it redirects the crates.io dependency
 # above to the local checkout, so edits take effect without a publish. Leave it commented on anything
