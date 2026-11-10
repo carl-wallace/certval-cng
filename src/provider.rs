@@ -1,7 +1,7 @@
 //! The provider that implements certval's hashing and verification interfaces against CNG.
 
-use crate::algorithm::{signature_scheme, Hash, Padding, Scheme};
-use crate::blob::{ecc_public_blob, ecdsa_signature_raw, rsa_public_blob};
+use crate::algorithm::{signature_scheme, Hash, MlDsa, Padding, Scheme};
+use crate::blob::{ecc_public_blob, ecdsa_signature_raw, ml_dsa_public_blob, rsa_public_blob};
 use crate::cng::{self, Verdict};
 use certval::{
     CalculateHash, PathValidationStatus, PkiEnvironment, VerifySignatureDigest,
@@ -45,6 +45,41 @@ impl CngCrypto {
         cng::fips_mode_enabled()
     }
 
+    /// Reports whether this Windows' CNG offers ML-DSA (ML-DSA-44, -65 and -87), as recent
+    /// Windows 11 builds do. Without it, the provider declines ML-DSA and software answers.
+    pub fn ml_dsa_available() -> bool {
+        cng::ml_dsa_available()
+    }
+
+    /// Reports whether this Windows' CNG offers ML-KEM (`BCryptEncapsulate` and
+    /// `NCryptDecapsulate`), with which, under the `cms` feature, the provider encrypts to an
+    /// ML-KEM recipient and a `CngRecipientKey` decrypts a KEMRecipientInfo. Without it, both are
+    /// declined, and software encrypts.
+    pub fn ml_kem_available() -> bool {
+        cng::ml_kem_available()
+    }
+
+    /// Verifies a pure ML-DSA `signature` over `message`, under the parameter set `set` the
+    /// signature algorithm names, which must be the key's.
+    fn verify_ml_dsa(
+        &self,
+        spki: &SubjectPublicKeyInfoOwned,
+        set: MlDsa,
+        message: &[u8],
+        signature: &[u8],
+    ) -> certval::Result<()> {
+        let Some((key_set, blob)) = ml_dsa_public_blob(spki) else {
+            return Err(certval::Error::Unrecognized);
+        };
+        if key_set != set || signature.len() != set.signature_len() {
+            return Err(certval::Error::Unrecognized);
+        }
+        let Some(key) = cng::import_ml_dsa(&blob) else {
+            return Err(certval::Error::Unrecognized);
+        };
+        conclude(cng::verify_ml_dsa(&key, message, signature))
+    }
+
     /// Verifies `signature` over `digest`, reporting the outcome in the terms certval's interfaces
     /// are defined in.
     fn verify_digest(
@@ -79,28 +114,39 @@ impl CngCrypto {
             return Err(certval::Error::Unrecognized);
         };
 
-        match cng::verify(&key, scheme.padding, scheme.hash, digest, &signature) {
-            // CNG verified the signature.
-            Verdict::Valid => {
-                trace!("CNG verified a signature");
-                Ok(())
-            }
+        conclude(cng::verify(
+            &key,
+            scheme.padding,
+            scheme.hash,
+            digest,
+            &signature,
+        ))
+    }
+}
 
-            // CNG reached a verdict and it was negative. The environment treats this as final and
-            // consults no other implementation.
-            Verdict::Invalid => {
-                trace!("CNG rejected a signature");
-                Err(certval::Error::PathValidation(
-                    PathValidationStatus::SignatureVerificationFailure,
-                ))
-            }
+/// CNG's verdict in the terms certval's interfaces are defined in.
+fn conclude(verdict: Verdict) -> certval::Result<()> {
+    match verdict {
+        // CNG verified the signature.
+        Verdict::Valid => {
+            trace!("CNG verified a signature");
+            Ok(())
+        }
 
-            // Any other status is CNG declining the request rather than judging the signature,
-            // so another implementation answers.
-            Verdict::Declined(status) => {
-                debug!("CNG could not verify a signature: {status:#010x}");
-                Err(certval::Error::Unrecognized)
-            }
+        // CNG reached a verdict and it was negative. The environment treats this as final and
+        // consults no other implementation.
+        Verdict::Invalid => {
+            trace!("CNG rejected a signature");
+            Err(certval::Error::PathValidation(
+                PathValidationStatus::SignatureVerificationFailure,
+            ))
+        }
+
+        // Any other status is CNG declining the request rather than judging the signature, so
+        // another implementation answers.
+        Verdict::Declined(status) => {
+            debug!("CNG could not verify a signature: {status:#010x}");
+            Err(certval::Error::Unrecognized)
         }
     }
 }
@@ -128,11 +174,17 @@ impl VerifySignatureMessage for CngCrypto {
         signature_alg: &AlgorithmIdentifierOwned,
         spki: &SubjectPublicKeyInfoOwned,
     ) -> certval::Result<()> {
+        // Pure ML-DSA signs the message itself, which CNG takes as it is.
+        if let Some(set) = MlDsa::from_algorithm(signature_alg) {
+            let signature = signature.as_bytes().ok_or(certval::Error::ParseError)?;
+            return self.verify_ml_dsa(spki, set, message_to_verify, signature);
+        }
         let Some(scheme) = signature_scheme(signature_alg) else {
             return Err(certval::Error::Unrecognized);
         };
         let signature = signature.as_bytes().ok_or(certval::Error::ParseError)?;
-        // CNG verifies digests only, so the message is hashed here, also with CNG.
+        // CNG verifies RSA and ECDSA over digests only, so the message is hashed here, also with
+        // CNG.
         let Some(digest) = cng::hash(scheme.hash, message_to_verify) else {
             return Err(certval::Error::Unrecognized);
         };

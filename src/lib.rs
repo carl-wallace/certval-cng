@@ -77,6 +77,8 @@ mod cng;
 mod provider;
 
 #[cfg(all(windows, feature = "cms"))]
-pub use self::cms::{import_pkcs8, CertStoreIdentities, CngRecipientKey, CngSigningKey};
+pub use self::cms::{
+    import_pkcs8, import_pkcs8_key, CertStoreIdentities, CngKey, CngRecipientKey, CngSigningKey,
+};
 #[cfg(windows)]
 pub use provider::CngCrypto;

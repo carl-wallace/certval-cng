@@ -19,13 +19,13 @@ include = ["src/**/*.rs", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENS
 
 [features]
 default = []
-# Enables certval's software ML-DSA implementation. The provider needs nothing from it, since it
-# declines ML-DSA, but without it the ML-DSA collection test has no software verdict to compare
-# against and every pair is "no opinion".
-pqc = ["certval/pqc"]
+# Enables certval's software ML-DSA verification, and with `cms`, certval-cms's software ML-DSA
+# signing. The provider needs neither, since its ML-DSA is CNG's, but without them the ML-DSA tests
+# have no software to compare against.
+pqc = ["certval/pqc", "certval-cms?/pqc"]
 # Implements certval-cms's content encryption and decryption and key transport by BCrypt, and
 # recipient and signing credentials over NCrypt keys, including those in the certificate store.
-cms = ["dep:certval-cms", "dep:cms", "dep:x509-cert", "dep:zeroize"]
+cms = ["dep:certval-cms", "dep:cms", "dep:pkcs8", "dep:x509-cert", "dep:zeroize"]
 
 [dependencies]
 certval = { version = "0.2.0-rc.2", default-features = false }
@@ -39,11 +39,13 @@ log = "0.4.33"
 # Under the `cms` feature.
 certval-cms = { version = "0.1.0-rc.1", optional = true }
 cms = { version = "=0.3.0-rc.1", optional = true }
+pkcs8 = { version = "0.11.0", optional = true }
 x509-cert = { version = "0.3.0", default-features = false, optional = true }
 zeroize = { version = "1.8.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+# LibraryLoader finds NCryptDecapsulate at run time: ncrypt.dll exports it only where CNG has ML-KEM.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 # certval's software RSA, which the tests compare this provider's verdicts against. A dev-dependency,
@@ -62,6 +64,10 @@ rsa = { version = "=0.10.0-rc.21", features = ["encoding"] }
 elliptic-curve = { version = "0.14.3", features = ["arithmetic"] }
 getrandom = { version = "0.4.1", features = ["sys_rng"] }
 rand_core = "0.10.1"
+# The ML-DSA and ML-KEM cms tests, under `pqc`: keys generated in software, as PKCS #8 for CNG to
+# import.
+ml-dsa = { version = "0.1.1", features = ["pkcs8"] }
+ml-kem = { version = "0.3.4", features = ["pkcs8"] }
 
 [package.metadata.docs.rs]
 # The provider exists only on Windows.

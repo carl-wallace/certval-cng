@@ -8,7 +8,8 @@
 //! KDF hash, wrap and user keying material.
 //!
 //! Signing: messages a `CngSigningKey` signs, a digest at a time, are verified by software, and
-//! messages software signs are verified, and hashed, by this provider alone.
+//! messages software signs are verified, and hashed, by this provider alone. A `CngKey`, with no
+//! certificate, signs its own certificate request, which software verifies.
 
 #![cfg(all(windows, feature = "cms"))]
 
@@ -94,6 +95,7 @@ fn cng() -> CmsEnvironment {
     env.add_decrypt_content_callback(CngCrypto::new());
     env.add_encrypt_key_transport_callback(CngCrypto::new());
     env.add_encrypt_key_agreement_callback(CngCrypto::new());
+    env.add_encrypt_kem_callback(CngCrypto::new());
     env
 }
 
@@ -360,6 +362,327 @@ fn ecdsa_on_each_curve_with_each_digest() {
         for digest in DIGESTS {
             sign_both_ways(&key, |s| s.digest(digest), &format!("{curve} {digest:?}"));
         }
+    }
+}
+
+// ---- keys without certificates
+
+/// A key with no certificate signs its own certificate request through x509-cert's builder, with
+/// only this provider registered, and software verifies it with the key's public key, which is the
+/// one the request carries.
+fn signs_its_request(
+    key: &dyn certval_cms::SigningKey,
+    digest: DigestAlgorithm,
+    pss: bool,
+    name: &str,
+) {
+    use certval_cms::{CredentialSignature, CredentialSigner};
+    use x509_cert::request::RequestBuilder;
+    let platform = cng();
+    let signer = if pss {
+        CredentialSigner::with_algorithm(&platform, key, digest, rsa_pss(digest).unwrap())
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+    } else {
+        CredentialSigner::new(&platform, key, digest).unwrap_or_else(|e| panic!("{name}: {e}"))
+    };
+    let request = RequestBuilder::new(Name::from_str("CN=certval-cng request").unwrap())
+        .unwrap()
+        .build::<_, CredentialSignature>(&signer)
+        .unwrap_or_else(|e| panic!("{name}: signing the request: {e}"));
+    assert_eq!(&request.info.public_key, key.public_key(), "{name}");
+    let software = software();
+    let pe = software.pki_environment().unwrap();
+    pe.verify_signature_message(
+        pe,
+        &request.info.to_der().unwrap(),
+        &request.signature,
+        &request.algorithm,
+        &request.info.public_key,
+    )
+    .unwrap_or_else(|e| panic!("{name}: verifying the request: {e:?}"));
+}
+
+#[test]
+fn imported_keys_without_certificates_sign_requests() {
+    use certval_cms::SigningKey;
+    use certval_cng::import_pkcs8_key;
+    let rsa = Key::rsa();
+    let key = import_pkcs8_key(&rsa.pkcs8).unwrap();
+    // The public key CNG exports is the one the certificate carries.
+    assert_eq!(
+        key.public_key(),
+        rsa.cert.tbs_certificate().subject_public_key_info(),
+        "RSA"
+    );
+    for digest in DIGESTS {
+        signs_its_request(&key, digest, false, &format!("RSA PKCS #1 v1.5 {digest:?}"));
+        signs_its_request(&key, digest, true, &format!("RSA PSS {digest:?}"));
+    }
+    for (ec, curve) in [
+        (ec_key!(p256), "P-256"),
+        (ec_key!(p384), "P-384"),
+        (ec_key!(p521), "P-521"),
+    ] {
+        let key = import_pkcs8_key(&ec.pkcs8).unwrap();
+        assert_eq!(
+            key.public_key(),
+            ec.cert.tbs_certificate().subject_public_key_info(),
+            "{curve}"
+        );
+        for digest in DIGESTS {
+            signs_its_request(&key, digest, false, &format!("{curve} {digest:?}"));
+        }
+    }
+}
+
+// ---- ML-DSA, where this Windows' CNG offers it
+
+#[cfg(feature = "pqc")]
+mod cng_ml_dsa {
+    use super::*;
+    use certval_cms::SigningKey;
+    use certval_cng::import_pkcs8_key;
+    use ml_dsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use ml_dsa::{MlDsa44, MlDsa65, MlDsa87};
+    use rand_core::Rng as _;
+    use signature::Keypair;
+
+    /// A software ML-DSA key as PKCS #8, and its certificate.
+    macro_rules! ml_dsa_key {
+        ($params:ty) => {{
+            let mut seed = [0u8; 32];
+            rng().fill_bytes(&mut seed);
+            let key = ml_dsa::SigningKey::<$params>::from_seed(&seed.into());
+            Key {
+                cert: certificate(key.verifying_key().to_public_key_der().unwrap().as_bytes()),
+                pkcs8: key.to_pkcs8_der().unwrap().as_bytes().to_vec(),
+            }
+        }};
+    }
+
+    fn keys() -> [(Key, &'static str); 3] {
+        [
+            (ml_dsa_key!(MlDsa44), "ML-DSA-44"),
+            (ml_dsa_key!(MlDsa65), "ML-DSA-65"),
+            (ml_dsa_key!(MlDsa87), "ML-DSA-87"),
+        ]
+    }
+
+    fn available() -> bool {
+        let available = CngCrypto::ml_dsa_available();
+        if !available {
+            println!("ML-DSA: skipped, this Windows' CNG has no ML-DSA");
+        }
+        available
+    }
+
+    /// Runs `test` on a thread with an 8 MiB stack: software ML-DSA in a debug build exceeds the
+    /// 2 MiB a test thread has by default.
+    fn with_large_stack(test: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(test)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    /// CNG signs and software verifies, and software signs and CNG alone verifies: SignedData with
+    /// signed attributes, pure ML-DSA over them, SHA-512 for their digest (RFC 9882).
+    #[test]
+    fn signs_and_verifies_with_each_parameter_set() {
+        if !available() {
+            return;
+        }
+        with_large_stack(|| {
+            for (key, name) in keys() {
+                sign_both_ways(&key, |s| s.digest(DigestAlgorithm::Sha512), name);
+            }
+        });
+    }
+
+    /// An ML-DSA key with no certificate signs its own certificate request, its public key the one
+    /// the certificate carries.
+    #[test]
+    fn keys_without_certificates_sign_requests() {
+        if !available() {
+            return;
+        }
+        with_large_stack(|| {
+            for (key, name) in keys() {
+                let imported =
+                    import_pkcs8_key(&key.pkcs8).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(
+                    imported.public_key(),
+                    key.cert.tbs_certificate().subject_public_key_info(),
+                    "{name}"
+                );
+                signs_its_request(&imported, DigestAlgorithm::Sha512, false, name);
+            }
+        });
+    }
+}
+
+// ---- ML-KEM decryption, where this Windows' CNG offers it
+
+#[cfg(feature = "pqc")]
+mod cng_ml_kem {
+    use super::*;
+    use certval_cms::{EncryptKem, KdfAlgorithm, KemRecipient};
+    use ml_kem::pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use ml_kem::{Kem, MlKem1024, MlKem512, MlKem768};
+
+    const KDFS: [KdfAlgorithm; 3] = [
+        KdfAlgorithm::HkdfSha256,
+        KdfAlgorithm::HkdfSha384,
+        KdfAlgorithm::HkdfSha512,
+    ];
+
+    /// A software ML-KEM key as PKCS #8, and its certificate.
+    macro_rules! ml_kem_key {
+        ($kem:ty) => {{
+            let (dk, ek) = <$kem as Kem>::generate_keypair_from_rng(&mut rng());
+            Key {
+                cert: certificate(ek.to_public_key_der().unwrap().as_bytes()),
+                pkcs8: dk.to_pkcs8_der().unwrap().as_bytes().to_vec(),
+            }
+        }};
+    }
+
+    /// A message `env` encrypts to `key`'s certificate with `kdf`, `wrap`, `ukm` and `content`.
+    fn kem_envelop(
+        env: &CmsEnvironment,
+        key: &Key,
+        kdf: KdfAlgorithm,
+        wrap: KeyWrapAlgorithm,
+        ukm: Option<Vec<u8>>,
+        content: ContentEncryptionAlgorithm,
+        case: &str,
+    ) -> ContentInfo {
+        let recipient = KemRecipient::from_certificate(env, &key.cert, None, kdf, wrap, ukm)
+            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        envelop(env, content, recipient)
+    }
+
+    /// Every KDF and wrap, with and without user keying material, in CBC and GCM, three ways:
+    /// software encrypts and a `CngRecipientKey` decrypts with only this provider registered; this
+    /// provider alone encrypts, which it must since nothing else is registered, and software
+    /// decrypts; and this provider encrypts and decrypts.
+    fn crosses(key: &Key, name: &str) {
+        let (software, platform) = (software(), cng());
+        let (credential, _) =
+            import_pkcs8(key.cert.clone(), &key.pkcs8).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let software_key = SoftwareRecipientKey::from_pkcs8_der(key.cert.clone(), &key.pkcs8)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        for kdf in KDFS {
+            for wrap in WRAPS {
+                for ukm in [None, Some(b"user keying material".to_vec())] {
+                    for content in [
+                        ContentEncryptionAlgorithm::Aes256Cbc,
+                        ContentEncryptionAlgorithm::Aes256Gcm,
+                    ] {
+                        let case =
+                            format!("{name} {kdf:?} {wrap:?} ukm={} {content:?}", ukm.is_some());
+                        let ci =
+                            kem_envelop(&software, key, kdf, wrap, ukm.clone(), content, &case);
+                        assert_decrypts(
+                            &platform,
+                            &ci,
+                            &credential,
+                            &format!("software to CNG, {case}"),
+                        );
+                        let ci =
+                            kem_envelop(&platform, key, kdf, wrap, ukm.clone(), content, &case);
+                        assert_decrypts(
+                            &software,
+                            &ci,
+                            &software_key,
+                            &format!("CNG to software, {case}"),
+                        );
+                        assert_decrypts(
+                            &platform,
+                            &ci,
+                            &credential,
+                            &format!("CNG to CNG, {case}"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encrypts_and_decrypts_with_each_parameter_set() {
+        if !CngCrypto::ml_kem_available() {
+            println!("ML-KEM: skipped, this Windows' CNG has no ML-KEM");
+            return;
+        }
+        for (key, name) in [
+            (ml_kem_key!(MlKem512), "ML-KEM-512"),
+            (ml_kem_key!(MlKem768), "ML-KEM-768"),
+            (ml_kem_key!(MlKem1024), "ML-KEM-1024"),
+        ] {
+            crosses(&key, name);
+        }
+    }
+
+    /// A key that is not ML-KEM, or a malformed one, is declined, so software can answer.
+    #[test]
+    fn a_key_other_than_ml_kem_is_declined() {
+        let spki = Key::rsa()
+            .cert
+            .tbs_certificate()
+            .subject_public_key_info()
+            .clone();
+        let result = CngCrypto::new().encrypt_kem(
+            &cng(),
+            KdfAlgorithm::HkdfSha256,
+            KeyWrapAlgorithm::Aes256,
+            &spki,
+            None,
+            &[0u8; 32],
+        );
+        assert!(
+            matches!(result, Err(Error::Unrecognized)),
+            "{:?}",
+            result.err()
+        );
+    }
+
+    /// A ciphertext changed in transit decapsulates, as ML-KEM's implicit rejection has it, to a
+    /// different shared secret, so the key unwrap fails: an error, not a wrong key.
+    #[test]
+    fn a_changed_ciphertext_is_refused() {
+        if !CngCrypto::ml_kem_available() {
+            println!("ML-KEM: skipped, this Windows' CNG has no ML-KEM");
+            return;
+        }
+        let key = ml_kem_key!(MlKem768);
+        let (credential, _) = import_pkcs8(key.cert.clone(), &key.pkcs8).unwrap();
+        let mut ct = vec![0u8; 1088];
+        ct[0] = 1;
+        let result = credential.decrypt_kem(
+            &cng(),
+            KdfAlgorithm::HkdfSha256,
+            KeyWrapAlgorithm::Aes256,
+            &ct,
+            None,
+            &[0u8; 40],
+        );
+        assert!(
+            matches!(result, Err(Error::Crypto(_))),
+            "{:?}",
+            result.err()
+        );
+        let short = credential.decrypt_kem(
+            &cng(),
+            KdfAlgorithm::HkdfSha256,
+            KeyWrapAlgorithm::Aes256,
+            &ct[..1087],
+            None,
+            &[0u8; 40],
+        );
+        assert!(matches!(short, Err(Error::Crypto(_))), "{:?}", short.err());
     }
 }
 

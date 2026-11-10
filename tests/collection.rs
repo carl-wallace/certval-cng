@@ -86,16 +86,32 @@ fn pss_platform_agrees_with_software() {
     run_family("RSASSA-PSS", PSS_CERTS);
 }
 
-/// ML-DSA is declined by the provider, so this checks the fall-through path: every verification
-/// reaches software and the verdicts still agree.
+/// ML-DSA is CNG's where this Windows offers it, and then the provider must answer and agree with
+/// software. Without it the provider declines, so this checks the fall-through path: every
+/// verification reaches software and the verdicts still agree.
 #[test]
-fn ml_dsa_falls_through_to_software() {
+fn ml_dsa_platform_agrees_with_software() {
     if !cfg!(feature = "pqc") {
         println!("ML-DSA: skipped, built without pqc, so certval's software has no verdict to compare against");
         return;
     }
+    let available = CngCrypto::ml_dsa_available();
+    println!("ML-DSA in CNG: {available}");
     let answered = run_family("ML-DSA", MLDSA_CERTS);
-    assert_eq!(answered, 0, "the provider answered an ML-DSA verification");
+    if env(MLDSA_CERTS).is_none() {
+        return;
+    }
+    if available {
+        assert!(
+            answered > 0,
+            "CNG offers ML-DSA, but the provider answered no ML-DSA verification"
+        );
+    } else {
+        assert_eq!(
+            answered, 0,
+            "the provider answered an ML-DSA verification without CNG's ML-DSA"
+        );
+    }
 }
 
 /// With an RSA or ECDSA collection pointed at, the platform must actually verify something.
