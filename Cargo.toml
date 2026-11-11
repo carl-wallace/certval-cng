@@ -31,7 +31,7 @@ cms = ["dep:certval-cms", "dep:cms", "dep:pkcs8", "dep:x509-cert", "dep:zeroize"
 certval = { version = "0.2.0-rc.2", default-features = false }
 
 const-oid = { version = "0.10.2", features = ["db"] }
-der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
+der = { version = "0.8.3", features = ["alloc", "derive", "oid"] }
 spki = "0.8.0"
 
 log = "0.4.33"
