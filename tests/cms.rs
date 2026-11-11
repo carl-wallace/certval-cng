@@ -147,7 +147,7 @@ struct Key {
 
 impl Key {
     fn rsa() -> Self {
-        let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+        let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
         let spki = key.to_public_key().to_public_key_der().unwrap();
         Self {
             cert: certificate(spki.as_bytes()),
