@@ -167,6 +167,7 @@ dependencies = [
  "sha1",
  "sha2",
  "signature",
+ "slh-dsa",
  "spki",
  "subtle",
  "x509-cert",
@@ -579,6 +580,7 @@ dependencies = [
  "pkcs8",
  "shake",
  "signature",
+ "zeroize",
 ]
 
 [[package]]
@@ -595,6 +597,7 @@ dependencies = [
  "rand_core",
  "sha3 0.12.0",
  "shake",
+ "zeroize",
 ]
 
 [[package]]
@@ -606,6 +609,7 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+ "zeroize",
 ]
 
 [[package]]
@@ -948,6 +952,7 @@ dependencies = [
  "signature",
  "typenum",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]

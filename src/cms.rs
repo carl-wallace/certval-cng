@@ -670,6 +670,11 @@ fn bcrypt_ecdh(curve: Curve, recipient_blob: &[u8]) -> Option<(Vec<u8>, Zeroizin
     let mut blob_len = 0u32;
     let mut z = Zeroizing::new(vec![0u8; field_len]);
     let mut z_len = 0u32;
+    // The lengths are converted before any handle is acquired, so that no early return can come
+    // between acquiring a handle and releasing it.
+    let blob_capacity = u32::try_from(blob.len()).ok()?;
+    let recipient_blob_len = u32::try_from(recipient_blob.len()).ok()?;
+    let z_capacity = u32::try_from(z.len()).ok()?;
     // SAFETY: each handle is written by BCrypt and destroyed by its owner below; every buffer is
     // live with the length passed.
     let status = unsafe {
@@ -683,7 +688,7 @@ fn bcrypt_ecdh(curve: Curve, recipient_blob: &[u8]) -> Option<(Vec<u8>, Zeroizin
                     std::ptr::null_mut(),
                     BCRYPT_ECCPUBLIC_BLOB,
                     blob.as_mut_ptr(),
-                    u32::try_from(blob.len()).ok()?,
+                    blob_capacity,
                     &mut blob_len,
                     0,
                 );
@@ -695,7 +700,7 @@ fn bcrypt_ecdh(curve: Curve, recipient_blob: &[u8]) -> Option<(Vec<u8>, Zeroizin
                     BCRYPT_ECCPUBLIC_BLOB,
                     &mut recipient,
                     recipient_blob.as_ptr(),
-                    u32::try_from(recipient_blob.len()).ok()?,
+                    recipient_blob_len,
                     0,
                 );
             }
@@ -709,7 +714,7 @@ fn bcrypt_ecdh(curve: Curve, recipient_blob: &[u8]) -> Option<(Vec<u8>, Zeroizin
                         BCRYPT_KDF_RAW_SECRET,
                         std::ptr::null(),
                         z.as_mut_ptr(),
-                        u32::try_from(z.len()).ok()?,
+                        z_capacity,
                         &mut z_len,
                         0,
                     );
@@ -890,6 +895,10 @@ impl RecipientCredential for CngRecipientKey {
         let mut secret: NCRYPT_SECRET_HANDLE = 0;
         let mut z = Zeroizing::new(vec![0u8; curve.field_len()]);
         let mut z_len = 0u32;
+        // The lengths are converted before any handle is acquired, so that no early return can come
+        // between acquiring a handle and releasing it.
+        let blob_len = len32(&blob)?;
+        let z_capacity = len32(&z)?;
         // SAFETY: each handle is written by NCrypt and freed below or by its owner; every buffer is
         // live with the length passed.
         let status = unsafe {
@@ -911,7 +920,7 @@ impl RecipientCredential for CngRecipientKey {
                     std::ptr::null(),
                     &mut originator_key,
                     blob.as_ptr(),
-                    len32(&blob)?,
+                    blob_len,
                     0,
                 );
                 NCryptFreeObject(provider);
@@ -930,7 +939,7 @@ impl RecipientCredential for CngRecipientKey {
                             BCRYPT_KDF_RAW_SECRET,
                             std::ptr::null(),
                             z.as_mut_ptr(),
-                            len32(&z)?,
+                            z_capacity,
                             &mut z_len,
                             0,
                         )
