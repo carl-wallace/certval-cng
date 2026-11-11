@@ -21,7 +21,7 @@ use certval_cms::{
     SigningKey,
 };
 use cms::enveloped_data::RecipientIdentifier;
-use const_oid::db::rfc5912::{ID_EC_PUBLIC_KEY, RSA_ENCRYPTION};
+use const_oid::db::rfc5912::{ID_EC_PUBLIC_KEY, ID_RSASSA_PSS, RSA_ENCRYPTION};
 use der::{
     asn1::{Any, OctetString, Uint},
     Decode, Encode, Sequence, Tag,
@@ -1205,7 +1205,8 @@ fn ncrypt_sign_digest(
         return Err(Error::Unrecognized);
     }
     let fits = match scheme.padding {
-        Padding::Pkcs1 | Padding::Pss { .. } => key_alg == RSA_ENCRYPTION,
+        Padding::Pkcs1 => key_alg == RSA_ENCRYPTION,
+        Padding::Pss { .. } => key_alg == RSA_ENCRYPTION || key_alg == ID_RSASSA_PSS,
         Padding::Ecdsa => key_alg == ID_EC_PUBLIC_KEY,
     };
     if !fits {
