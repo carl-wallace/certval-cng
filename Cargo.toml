@@ -28,7 +28,7 @@ pqc = ["certval/pqc", "certval-cms?/pqc"]
 cms = ["dep:certval-cms", "dep:cms", "dep:pkcs8", "dep:x509-cert", "dep:zeroize"]
 
 [dependencies]
-certval = { version = "0.2.0-rc.2", default-features = false }
+certval = { version = "0.2.0-rc.3", default-features = false }
 
 const-oid = { version = "0.10.2", features = ["db"] }
 der = { version = "0.8.3", features = ["alloc", "derive", "oid"] }
@@ -50,7 +50,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 [dev-dependencies]
 # certval's software RSA, which the tests compare this provider's verdicts against. A dev-dependency,
 # so the application, not this crate, decides which algorithms certval's software offers.
-certval = { version = "0.2.0-rc.2", default-features = false, features = ["rsa"] }
+certval = { version = "0.2.0-rc.3", default-features = false, features = ["rsa"] }
 x509-cert = { version = "0.3.0", features = ["builder", "hazmat"] }
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pkcs8"] }
 p384 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pkcs8"] }
@@ -77,9 +77,6 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [patch.crates-io]
-# certval 0.2.0-rc.3 (SHAKE digests, rsa 0.10.0, cms 0.3.0-rc.2) is not yet on crates.io, so it comes
-# from rust-pki's main until it is published; then this line goes and the requirement moves to rc.3.
-certval = { git = "https://github.com/carl-wallace/rust-pki", branch = "main" }
 # certval-cms is not on crates.io yet, so the `cms` feature takes it from the neighboring checkout.
 # Remove this once it publishes.
 certval-cms = { path = "../certval-cms" }
