@@ -188,10 +188,6 @@ the fall-through to software.
 
 The `cms` feature's tests run in Windows CI.
 
-certval-cms is not on crates.io yet, so `Cargo.toml`'s `[patch.crates-io]` takes it from a
-neighboring checkout (`../certval-cms`), and CI checks it out there. Both go when it publishes, and
-this crate cannot publish before it does.
-
 certval is consumed from crates.io. A commented `[patch.crates-io]` line in `Cargo.toml` redirects
 the dependency to a local checkout for developing both crates together.
 
