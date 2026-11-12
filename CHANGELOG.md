@@ -2,7 +2,7 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
-## Unreleased
+## [0.1.0-rc.1] - 2026-11-12
 
 Signing keys without a certificate (certval-cms's `SigningKey`), e.g. to sign a certificate request:
 `CngKey`, which `import_pkcs8_key` makes from a PKCS #8 RSA or EC key, its public key exported by
