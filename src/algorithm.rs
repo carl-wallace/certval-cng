@@ -105,6 +105,14 @@ impl MlKem {
         }
     }
 
+    pub(crate) fn oid(self) -> ObjectIdentifier {
+        match self {
+            MlKem::MlKem512 => ID_ALG_ML_KEM_512,
+            MlKem::MlKem768 => ID_ALG_ML_KEM_768,
+            MlKem::MlKem1024 => ID_ALG_ML_KEM_1024,
+        }
+    }
+
     /// The name CNG gives the parameter set (`BCRYPT_MLKEM_PARAMETER_SET_*`).
     pub(crate) fn parameter_set(self) -> &'static str {
         match self {
@@ -147,6 +155,8 @@ impl MlKem {
     /// The size in octets of the seed `d ‖ z` a key pair is generated from, the same for every
     /// parameter set (FIPS 203).
     pub(crate) const SEED_LEN: usize = 64;
+
+    pub(crate) const ALL: [MlKem; 3] = [MlKem::MlKem512, MlKem::MlKem768, MlKem::MlKem1024];
 }
 
 /// A hash CNG provides. SHA-224 is absent because CNG has no SHA-224 provider, so SHA-224

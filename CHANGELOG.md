@@ -2,6 +2,13 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
+## [Unreleased]
+
+`import_pkcs8` refuses a key that is not the certificate's, as the other providers do: the public
+key CNG exports for the imported key must be the certificate's. Before, a mismatched pair was
+accepted, so `cms sign` produced a SignedData whose certificate did not match its signature, and
+`cms decrypt` failed only at key transport.
+
 ## [0.1.0-rc.1] - 2026-11-12
 
 Signing keys without a certificate (certval-cms's `SigningKey`), e.g. to sign a certificate request:
