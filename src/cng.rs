@@ -171,7 +171,7 @@ pub(crate) fn import_ecdsa(curve: Curve, blob: &[u8]) -> Option<Key> {
 const MLKEM_ALG_HANDLE: BCRYPT_ALG_HANDLE = 0x0000_0481 as BCRYPT_ALG_HANDLE;
 /// `BCRYPT_MLKEM_PUBLIC_BLOB`, which is also `BCRYPT_MLKEM_ENCAPSULATION_BLOB`.
 #[cfg_attr(not(feature = "cms"), allow(dead_code))]
-const MLKEM_PUBLIC_BLOB: PCWSTR = w!("MLKEMPUBLICBLOB");
+pub(crate) const MLKEM_PUBLIC_BLOB: PCWSTR = w!("MLKEMPUBLICBLOB");
 
 /// Imports a `BCRYPT_MLKEM_PUBLIC_BLOB` of an ML-KEM encapsulation key.
 #[cfg_attr(not(feature = "cms"), allow(dead_code))]

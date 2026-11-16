@@ -53,11 +53,11 @@ use zeroize::Zeroizing;
 use crate::algorithm::{signature_scheme, Hash, MlDsa, MlKem, Padding};
 use crate::blob::{
     ecc_public_blob, ecc_spki_from_blob, ml_dsa_spki_from_blob, ml_kem_private_blob,
-    ml_kem_public_blob, rsa_public_blob, rsa_spki_from_blob, Curve,
+    ml_kem_public_blob, ml_kem_spki_from_blob, rsa_public_blob, rsa_spki_from_blob, Curve,
 };
 use crate::cng::{
     bcrypt_encapsulate, hash_name, import_ml_kem, import_rsa, ml_kem_private_blob_type,
-    ncrypt_decapsulate, PqdsaPaddingInfo, PAD_PQDSA, PQDSA_PUBLIC_BLOB,
+    ncrypt_decapsulate, PqdsaPaddingInfo, MLKEM_PUBLIC_BLOB, PAD_PQDSA, PQDSA_PUBLIC_BLOB,
 };
 use crate::CngCrypto;
 
@@ -1067,22 +1067,13 @@ pub struct CngKey {
 }
 
 impl CngKey {
-    /// A key for `key`, its public key read back from CNG: RSA, EC on P-256, P-384 or P-521, or
-    /// ML-DSA. Any other key is declined.
-    fn new(key: NcryptKey) -> Result<Self> {
-        let public_key = export_public(&key, BCRYPT_RSAPUBLIC_BLOB)
-            .and_then(|blob| rsa_spki_from_blob(&blob))
-            .or_else(|| {
-                export_public(&key, BCRYPT_ECCPUBLIC_BLOB)
-                    .and_then(|blob| ecc_spki_from_blob(&blob))
-            })
-            .or_else(|| {
-                // NCrypt's generic public key blob for a post-quantum key is the BCrypt one.
-                export_public(&key, PQDSA_PUBLIC_BLOB)
-                    .or_else(|| export_public(&key, BCRYPT_PUBLIC_KEY_BLOB))
-                    .and_then(|blob| ml_dsa_spki_from_blob(&blob))
-            })
-            .ok_or(Error::Unrecognized)?;
+    /// A key for `key`, whose algorithm is `key_alg`, its public key read back from CNG: RSA, EC on
+    /// P-256, P-384 or P-521, or ML-DSA. Any other key, ML-KEM included, is declined.
+    fn new(key: NcryptKey, key_alg: const_oid::ObjectIdentifier) -> Result<Self> {
+        if MlKem::from_oid(&key_alg).is_some() {
+            return Err(Error::Unrecognized);
+        }
+        let public_key = exported_public_key(&key, key_alg).ok_or(Error::Unrecognized)?;
         Ok(Self {
             public_key,
             key: Arc::new(key),
@@ -1154,6 +1145,64 @@ fn ncrypt_sign_message(
     signature.truncate(written as usize);
     trace!("CNG signed with {}", alg.oid);
     Ok(signature)
+}
+
+/// The public key of the NCrypt `key`, read back from CNG: RSA, EC on P-256, P-384 or P-521,
+/// ML-DSA or ML-KEM, as `key_alg`, the algorithm of the PKCS #8 it was imported from, says.
+/// `None` for any other algorithm, or a key NCrypt does not export.
+fn exported_public_key(
+    key: &NcryptKey,
+    key_alg: const_oid::ObjectIdentifier,
+) -> Option<SubjectPublicKeyInfoOwned> {
+    // A post-quantum key's public blob goes by its own name or by NCrypt's generic one, the BCrypt
+    // public key blob; which of the two NCrypt accepts has not been seen, so both are asked for.
+    let post_quantum = |specific| {
+        export_public(key, specific).or_else(|| export_public(key, BCRYPT_PUBLIC_KEY_BLOB))
+    };
+    if key_alg == RSA_ENCRYPTION || key_alg == ID_RSASSA_PSS {
+        rsa_spki_from_blob(&export_public(key, BCRYPT_RSAPUBLIC_BLOB)?)
+    } else if key_alg == ID_EC_PUBLIC_KEY {
+        ecc_spki_from_blob(&export_public(key, BCRYPT_ECCPUBLIC_BLOB)?)
+    } else if MlDsa::from_oid(&key_alg).is_some() {
+        ml_dsa_spki_from_blob(&post_quantum(PQDSA_PUBLIC_BLOB)?)
+    } else if MlKem::from_oid(&key_alg).is_some() {
+        ml_kem_spki_from_blob(&post_quantum(MLKEM_PUBLIC_BLOB)?)
+    } else {
+        None
+    }
+}
+
+/// Refuses `key`, the public key CNG exports for an imported private key, unless it is
+/// `certificate`'s: the same algorithm, the same named curve for an EC key, and the same public
+/// key. CNG exports every RSA key as rsaEncryption, so an RSA key matches a certificate identifying
+/// it as rsaEncryption or id-RSASSA-PSS. The parameters are otherwise not compared: RFC 3279
+/// requires NULL with rsaEncryption, but certificates omitting it exist, and the key is theirs all
+/// the same.
+fn check_certificates_key(
+    key: &SubjectPublicKeyInfoOwned,
+    certificate: &SubjectPublicKeyInfoOwned,
+) -> Result<()> {
+    let curve = |spki: &SubjectPublicKeyInfoOwned| {
+        spki.algorithm
+            .parameters
+            .as_ref()
+            .and_then(|p| p.decode_as::<const_oid::ObjectIdentifier>().ok())
+    };
+    let rsa = |oid: const_oid::ObjectIdentifier| oid == RSA_ENCRYPTION || oid == ID_RSASSA_PSS;
+    let same_algorithm = key.algorithm.oid == certificate.algorithm.oid
+        || rsa(key.algorithm.oid) && rsa(certificate.algorithm.oid);
+    let differs = if !same_algorithm {
+        "the algorithms differ"
+    } else if key.algorithm.oid == ID_EC_PUBLIC_KEY && curve(key) != curve(certificate) {
+        "the curves differ"
+    } else if key.subject_public_key != certificate.subject_public_key {
+        "the public keys differ"
+    } else {
+        return Ok(());
+    };
+    Err(Error::InvalidInput(format!(
+        "the private key is not the certificate's: {differs}"
+    )))
 }
 
 /// The public half of `key` as a `blob_type` blob, or `None` when NCrypt does not export it as
@@ -1455,12 +1504,19 @@ impl SigningCredentialSource for CertStoreIdentities {
 /// Credentials for a key imported into the Microsoft Software Key Storage Provider from PKCS #8,
 /// e.g. for testing, or for a key held in software that should be used through CNG. An ML-KEM
 /// key, whose PKCS #8 form the provider does not import, goes in as CNG's own seed or
-/// decapsulation-key blob, in whichever of RFC 9935's forms the PKCS #8 holds it.
+/// decapsulation-key blob, in whichever of RFC 9935's forms the PKCS #8 holds it. A key that is
+/// not `certificate`'s is refused: its public key, as CNG exports it, must be the certificate's.
 pub fn import_pkcs8(
     certificate: Certificate,
     pkcs8: &[u8],
 ) -> Result<(CngRecipientKey, CngSigningKey)> {
-    let key = Arc::new(import_into_software_ksp(pkcs8)?);
+    let (key, key_alg) = import_into_software_ksp(pkcs8)?;
+    let public_key = exported_public_key(&key, key_alg).ok_or(Error::Unrecognized)?;
+    check_certificates_key(
+        &public_key,
+        certificate.tbs_certificate().subject_public_key_info(),
+    )?;
+    let key = Arc::new(key);
     Ok((
         CngRecipientKey {
             certificate: certificate.clone(),
@@ -1476,14 +1532,16 @@ pub fn import_pkcs8(
 /// derives the public key from the private one, so an EC key need not carry its public key. A key
 /// of another type, including ML-KEM, which cannot sign, is declined.
 pub fn import_pkcs8_key(pkcs8: &[u8]) -> Result<CngKey> {
-    CngKey::new(import_into_software_ksp(pkcs8)?)
+    let (key, key_alg) = import_into_software_ksp(pkcs8)?;
+    CngKey::new(key, key_alg)
 }
 
 /// Imports `pkcs8` into the Microsoft Software Key Storage Provider, as an unnamed key that is not
 /// persisted: as PKCS #8, which the provider finalizes after import, except an ML-KEM key, which
 /// the provider's PKCS #8 import does not take and so goes in as CNG's own seed or
-/// decapsulation-key blob (`BCRYPT_MLKEM_KEY_BLOB`), as .NET's ML-KEM does.
-fn import_into_software_ksp(pkcs8: &[u8]) -> Result<NcryptKey> {
+/// decapsulation-key blob (`BCRYPT_MLKEM_KEY_BLOB`), as .NET's ML-KEM does. Returns the key with
+/// the algorithm the PKCS #8 names for it.
+fn import_into_software_ksp(pkcs8: &[u8]) -> Result<(NcryptKey, const_oid::ObjectIdentifier)> {
     use certval_cms::SeedOrExpandedKey;
     use pkcs8::PrivateKeyInfoRef;
     use windows_sys::Win32::Security::Cryptography::{
@@ -1546,5 +1604,5 @@ fn import_into_software_ksp(pkcs8: &[u8]) -> Result<NcryptKey> {
             "NCrypt could not import a key: {status:#010x}"
         )));
     }
-    Ok(NcryptKey(key))
+    Ok((NcryptKey(key), info.algorithm.oid))
 }

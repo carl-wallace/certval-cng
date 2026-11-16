@@ -312,6 +312,32 @@ pub(crate) fn ml_kem_public_blob(spki: &SubjectPublicKeyInfoOwned) -> Option<(Ml
     ))
 }
 
+/// The `SubjectPublicKeyInfo` for a `BCRYPT_MLKEM_PUBLIC_BLOB` of an ML-KEM key, as
+/// `NCryptExportKey` gives one: the reverse of [`ml_kem_public_blob`].
+#[cfg(feature = "cms")]
+pub(crate) fn ml_kem_spki_from_blob(blob: &[u8]) -> Option<SubjectPublicKeyInfoOwned> {
+    if header_field(blob, 0)? != MLKEM_PUBLIC_MAGIC {
+        return None;
+    }
+    let name_len = usize::try_from(header_field(blob, 1)?).ok()?;
+    let key_len = usize::try_from(header_field(blob, 2)?).ok()?;
+    let name = blob.get(12..12 + name_len)?;
+    let key = blob.get(12 + name_len..12 + name_len + key_len)?;
+    let set = MlKem::ALL
+        .into_iter()
+        .find(|set| parameter_set_utf16(set.parameter_set()) == name)?;
+    if key.len() != set.public_key_len() {
+        return None;
+    }
+    Some(SubjectPublicKeyInfoOwned {
+        algorithm: AlgorithmIdentifierOwned {
+            oid: set.oid(),
+            parameters: None,
+        },
+        subject_public_key: BitString::from_bytes(key).ok()?,
+    })
+}
+
 /// The blob an ML-KEM private key imports as: `BCRYPT_MLKEM_PRIVATE_SEED_BLOB` or
 /// `BCRYPT_MLKEM_PRIVATE_BLOB`.
 #[cfg(feature = "cms")]
@@ -684,6 +710,24 @@ mod tests {
             let mut with_parameters = spki;
             with_parameters.algorithm.parameters = Some(Any::null());
             assert!(ml_kem_public_blob(&with_parameters).is_none());
+        }
+    }
+
+    #[cfg(feature = "cms")]
+    #[test]
+    fn ml_kem_spki_round_trips_through_the_blob() {
+        for set in MlKem::ALL {
+            let spki = SubjectPublicKeyInfoOwned {
+                algorithm: AlgorithmIdentifierOwned {
+                    oid: set.oid(),
+                    parameters: None,
+                },
+                subject_public_key: BitString::from_bytes(&vec![0x5a; set.public_key_len()])
+                    .unwrap(),
+            };
+            let (_, blob) = ml_kem_public_blob(&spki).unwrap();
+            assert_eq!(ml_kem_spki_from_blob(&blob).unwrap(), spki);
+            assert!(ml_kem_spki_from_blob(&blob[..blob.len() - 1]).is_none());
         }
     }
 
