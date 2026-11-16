@@ -294,6 +294,56 @@ fn key_agreement_on_p521() {
     key_agreement(ec_key!(p521), "P-521");
 }
 
+/// Refuses `key`'s private key under `certificate`, saying why: `differs` is the reason the
+/// refusal must give.
+fn assert_refused(certificate: &Certificate, key: &Key, differs: &str, case: &str) {
+    let result = import_pkcs8(certificate.clone(), &key.pkcs8);
+    let Some(Error::InvalidInput(message)) = result.err() else {
+        panic!("{case}: imported a key that is not the certificate's");
+    };
+    assert_eq!(
+        message,
+        format!("the private key is not the certificate's: {differs}"),
+        "{case}"
+    );
+}
+
+#[test]
+fn a_key_that_is_not_the_certificates_is_refused() {
+    let rsa = Key::rsa();
+    let p256 = ec_key!(p256);
+    assert_refused(
+        &rsa.cert,
+        &Key::rsa(),
+        "the public keys differ",
+        "another RSA key",
+    );
+    assert_refused(
+        &p256.cert,
+        &ec_key!(p256),
+        "the public keys differ",
+        "another P-256 key",
+    );
+    assert_refused(
+        &p256.cert,
+        &ec_key!(p384),
+        "the curves differ",
+        "a P-384 key",
+    );
+    assert_refused(
+        &rsa.cert,
+        &p256,
+        "the algorithms differ",
+        "an EC key for RSA",
+    );
+    assert_refused(
+        &p256.cert,
+        &rsa,
+        "the algorithms differ",
+        "an RSA key for EC",
+    );
+}
+
 fn assert_signs_across(
     signing: &CmsEnvironment,
     verifying: &CmsEnvironment,
@@ -624,6 +674,27 @@ mod cng_ml_kem {
         ] {
             crosses(&key, name);
         }
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_certificates_is_refused() {
+        if !CngCrypto::ml_kem_available() {
+            println!("ML-KEM: skipped, this Windows' CNG has no ML-KEM");
+            return;
+        }
+        let key = ml_kem_key!(MlKem768);
+        assert_refused(
+            &key.cert,
+            &ml_kem_key!(MlKem768),
+            "the public keys differ",
+            "another ML-KEM-768 key",
+        );
+        assert_refused(
+            &key.cert,
+            &ml_kem_key!(MlKem1024),
+            "the algorithms differ",
+            "an ML-KEM-1024 key",
+        );
     }
 
     /// A key that is not ML-KEM, or a malformed one, is declined, so software can answer.
