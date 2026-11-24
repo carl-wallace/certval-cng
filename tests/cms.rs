@@ -5,7 +5,7 @@
 //! Enveloping: messages software builds are decrypted with only this provider registered and a
 //! `CngRecipientKey`, and messages this provider builds are decrypted by software. Every key
 //! transport algorithm with AES-CBC and AES-GCM content, and ECDH on P-256, P-384 and P-521 with each
-//! KDF hash, wrap and user keying material.
+//! KDF hash, wrap and user keying material. EncryptedData under a given key, both ways.
 //!
 //! Signing: messages a `CngSigningKey` signs, a digest at a time, are verified by software, and
 //! messages software signs are verified, and hashed, by this provider alone. A `CngKey`, with no
@@ -19,12 +19,13 @@ use std::time::Duration;
 
 use certval::PkiEnvironment;
 use certval_cms::{
-    rsa_pss, CmsEnvironment, ContentEncryptionAlgorithm, DigestAlgorithm, EnvelopedDataBuilder,
-    Error, KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
-    KeyWrapAlgorithm, RecipientCredential, SignedDataBuilder, Signer, SignerPolicy,
-    SigningCredential, SoftwareRecipientKey, SoftwareSigningKey,
+    content_info, rsa_pss, CmsEnvironment, ContentEncryptionAlgorithm, DigestAlgorithm,
+    EncryptedDataBuilder, Error, KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient,
+    KeyTransportAlgorithm, KeyWrapAlgorithm, RecipientCredential, SignedDataBuilder, Signer,
+    SignerPolicy, SigningCredential, SoftwareRecipientKey, SoftwareSigningKey,
 };
 use certval_cng::{import_pkcs8, CngCrypto};
+use cms::builder::{EnvelopedDataBuilder, RecipientInfoBuilder};
 use cms::content_info::ContentInfo;
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
 use der::{asn1::OctetString, Decode, Encode};
@@ -170,21 +171,56 @@ macro_rules! ec_key {
 fn envelop<'e>(
     env: &'e CmsEnvironment,
     alg: ContentEncryptionAlgorithm,
-    recipient: impl certval_cms::RecipientInfoBuilder<Rng = Rng> + 'e,
+    recipient: impl RecipientInfoBuilder<Rng = Rng> + 'e,
 ) -> ContentInfo {
     if alg.is_authenticated() {
-        certval_cms::AuthEnvelopedDataBuilder::new(MESSAGE, alg)
-            .unwrap()
+        certval_cms::AuthEnvelopedDataBuilder::new(MESSAGE, env.content_encryptor(alg))
             .add_recipient(recipient)
-            .build_content_info(env, &mut rng())
+            .build_content_info(&mut rng())
             .unwrap_or_else(|e| panic!("building: {e}"))
     } else {
-        EnvelopedDataBuilder::new(MESSAGE, alg)
-            .unwrap()
-            .add_recipient(recipient)
-            .build_content_info(env, &mut rng())
-            .unwrap_or_else(|e| panic!("building: {e}"))
+        let enveloped_data =
+            EnvelopedDataBuilder::new(None, MESSAGE, env.content_encryptor(alg), None)
+                .unwrap()
+                .add_recipient_info(recipient)
+                .unwrap()
+                .build_with_rng(&mut rng())
+                .unwrap_or_else(|e| panic!("building: {e}"));
+        content_info(const_oid::db::rfc5911::ID_ENVELOPED_DATA, &enveloped_data).unwrap()
     }
+}
+
+/// EncryptedData under a given key, both ways: what BCrypt encrypts, software decrypts, and the
+/// reverse, for each CBC key size.
+#[test]
+fn encrypted_data_under_a_given_key_both_ways() {
+    for alg in [
+        ContentEncryptionAlgorithm::Aes128Cbc,
+        ContentEncryptionAlgorithm::Aes192Cbc,
+        ContentEncryptionAlgorithm::Aes256Cbc,
+    ] {
+        let key: Vec<u8> = (1..=alg.key_len() as u8).collect();
+        for (builder, decrypter, name) in [
+            (cng(), software(), "BCrypt to software"),
+            (software(), cng(), "software to BCrypt"),
+        ] {
+            let ci = EncryptedDataBuilder::new(MESSAGE, &key, builder.content_encryptor(alg))
+                .build_content_info(&mut rng())
+                .unwrap_or_else(|e| panic!("{name} {alg:?}: {e}"));
+            let (_, content) = decrypter.decrypt_encrypted_data(&ci, &key).unwrap();
+            assert_eq!(content.as_slice(), MESSAGE, "{name} {alg:?}");
+        }
+    }
+    let wrong_length = EncryptedDataBuilder::<Rng>::new(
+        MESSAGE,
+        &[0; 32],
+        cng().content_encryptor(ContentEncryptionAlgorithm::Aes128Cbc),
+    )
+    .build(&mut rng());
+    assert!(
+        matches!(wrong_length, Err(Error::InvalidInput(_))),
+        "{wrong_length:?}"
+    );
 }
 
 fn assert_decrypts(

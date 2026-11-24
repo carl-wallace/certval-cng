@@ -417,6 +417,62 @@ fn gcm(
     Ok(output)
 }
 
+/// Encrypts `plaintext` under `key` with `alg`, the IV or nonce from the system's generator.
+fn encrypt(
+    alg: ContentEncryptionAlgorithm,
+    key: Zeroizing<Vec<u8>>,
+    plaintext: &[u8],
+    aad: Option<&[u8]>,
+) -> Result<ContentEncryptionOutput> {
+    if aad.is_some() && !alg.is_authenticated() {
+        return Err(Error::InvalidInput(String::from(
+            "associated data given for an algorithm that does not authenticate",
+        )));
+    }
+    let handle = aes_key(alg.is_authenticated(), &key)?;
+    let encrypted = if alg.is_authenticated() {
+        let nonce = random(GCM_NONCE_LEN)?;
+        let mut tag = vec![0u8; GCM_TAG_LEN];
+        let ciphertext = gcm(
+            true,
+            &handle,
+            &nonce,
+            aad.unwrap_or_default(),
+            &mut tag,
+            plaintext,
+        )
+        .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
+        let params = GcmParameters {
+            nonce: OctetString::new(nonce.as_slice())?,
+            icv_len: GCM_TAG_LEN as u8,
+        };
+        ContentEncryptionOutput {
+            ciphertext,
+            key,
+            algorithm: AlgorithmIdentifierOwned {
+                oid: alg.oid(),
+                parameters: Some(Any::encode_from(&params)?),
+            },
+            tag: Some(tag),
+        }
+    } else {
+        let iv = random(CBC_IV_LEN)?;
+        let ciphertext = cbc(true, &handle, &iv, plaintext)
+            .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
+        ContentEncryptionOutput {
+            ciphertext,
+            key,
+            algorithm: AlgorithmIdentifierOwned {
+                oid: alg.oid(),
+                parameters: Some(Any::new(Tag::OctetString, iv.as_slice())?),
+            },
+            tag: None,
+        }
+    };
+    trace!("CNG encrypted content with {alg:?}");
+    Ok(encrypted)
+}
+
 impl EncryptContent for CngCrypto {
     /// AES-CBC and AES-GCM by BCrypt, with the key, IV and nonce from the system's generator.
     fn encrypt_content(
@@ -426,54 +482,26 @@ impl EncryptContent for CngCrypto {
         plaintext: &[u8],
         aad: Option<&[u8]>,
     ) -> Result<ContentEncryptionOutput> {
-        if aad.is_some() && !alg.is_authenticated() {
-            return Err(Error::InvalidInput(String::from(
-                "associated data given for an algorithm that does not authenticate",
+        encrypt(alg, random(alg.key_len())?, plaintext, aad)
+    }
+
+    /// As [`encrypt_content`](Self::encrypt_content), under `key`.
+    fn encrypt_content_with_key(
+        &self,
+        _env: &CmsEnvironment,
+        alg: ContentEncryptionAlgorithm,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        if key.len() != alg.key_len() {
+            return Err(Error::InvalidInput(format!(
+                "a key of {} octets for {alg:?}, which takes {}",
+                key.len(),
+                alg.key_len()
             )));
         }
-        let key = random(alg.key_len())?;
-        let handle = aes_key(alg.is_authenticated(), &key)?;
-        let encrypted = if alg.is_authenticated() {
-            let nonce = random(GCM_NONCE_LEN)?;
-            let mut tag = vec![0u8; GCM_TAG_LEN];
-            let ciphertext = gcm(
-                true,
-                &handle,
-                &nonce,
-                aad.unwrap_or_default(),
-                &mut tag,
-                plaintext,
-            )
-            .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
-            let params = GcmParameters {
-                nonce: OctetString::new(nonce.as_slice())?,
-                icv_len: GCM_TAG_LEN as u8,
-            };
-            ContentEncryptionOutput {
-                ciphertext,
-                key,
-                algorithm: AlgorithmIdentifierOwned {
-                    oid: alg.oid(),
-                    parameters: Some(Any::encode_from(&params)?),
-                },
-                tag: Some(tag),
-            }
-        } else {
-            let iv = random(CBC_IV_LEN)?;
-            let ciphertext = cbc(true, &handle, &iv, plaintext)
-                .map_err(|_| Error::Crypto(String::from("content encryption failed")))?;
-            ContentEncryptionOutput {
-                ciphertext,
-                key,
-                algorithm: AlgorithmIdentifierOwned {
-                    oid: alg.oid(),
-                    parameters: Some(Any::new(Tag::OctetString, iv.as_slice())?),
-                },
-                tag: None,
-            }
-        };
-        trace!("CNG encrypted content with {alg:?}");
-        Ok(encrypted)
+        encrypt(alg, Zeroizing::new(key.to_vec()), plaintext, aad)
     }
 }
 

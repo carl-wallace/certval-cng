@@ -9,6 +9,9 @@ key CNG exports for the imported key must be the certificate's. Before, a mismat
 accepted, so `cms sign` produced a SignedData whose certificate did not match its signature, and
 `cms decrypt` failed only at key transport.
 
+With `cms`, `CngCrypto` implements certval-cms's `EncryptContent::encrypt_content_with_key`, so
+EncryptedData under a given key is encrypted through BCrypt.
+
 ## [0.1.0-rc.1] - 2026-11-12
 
 Signing keys without a certificate (certval-cms's `SigningKey`), e.g. to sign a certificate request:
