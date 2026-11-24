@@ -136,6 +136,13 @@ the shared secret leaves CNG. bcrypt.dll and ncrypt.dll export `BCryptEncapsulat
 `NCryptDecapsulate` only where CNG has ML-KEM, so they are looked up at run time rather than
 linked, and `CngCrypto::ml_kem_available()` reports whether both were found.
 
+The same key transport, key agreement and key wrap serve cms's own recipient builders, without a
+`CmsEnvironment`: `CngKeyEncryptor` is the key encryption `KeyTransRecipientInfoBuilder` takes, and
+`CngKeyAgreement` and `CngKeyWrap` are the key agreement and key wrap `KeyAgreeRecipientInfoBuilder`
+takes. `CngKeyAgreement` performs the ECDH in BCrypt and derives the key-encryption key with cms's
+X9.63 KDF, in process, and `CngKeyWrap` wraps with BCrypt. The CMS tests build key transport and key
+agreement recipients through cms's builders with these types, and software decrypts.
+
 ## Testing
 
 `cargo test` runs on any platform; off Windows it runs only the portable unit tests (the algorithm

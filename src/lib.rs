@@ -70,6 +70,8 @@ mod blob;
 #[cfg(all(windows, feature = "cms"))]
 #[allow(unsafe_code)]
 mod cms;
+#[cfg(all(windows, feature = "cms"))]
+mod cms_builders;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod cng;
@@ -80,5 +82,7 @@ mod provider;
 pub use self::cms::{
     import_pkcs8, import_pkcs8_key, CertStoreIdentities, CngKey, CngRecipientKey, CngSigningKey,
 };
+#[cfg(all(windows, feature = "cms"))]
+pub use cms_builders::{CngKeyAgreement, CngKeyEncryptor, CngKeyWrap};
 #[cfg(windows)]
 pub use provider::CngCrypto;

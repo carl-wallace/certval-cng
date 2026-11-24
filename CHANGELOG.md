@@ -12,6 +12,10 @@ accepted, so `cms sign` produced a SignedData whose certificate did not match it
 With `cms`, `CngCrypto` implements certval-cms's `EncryptContent::encrypt_content_with_key`, so
 EncryptedData under a given key is encrypted through BCrypt.
 
+With `cms`, `CngKeyEncryptor`, `CngKeyAgreement` and `CngKeyWrap` implement cms's key encryption,
+key agreement and key wrap traits, so cms's own `KeyTransRecipientInfoBuilder` and
+`KeyAgreeRecipientInfoBuilder` perform RSA key transport, ECDH and AES key wrap through BCrypt.
+
 ## [0.1.0-rc.1] - 2026-11-12
 
 Signing keys without a certificate (certval-cms's `SigningKey`), e.g. to sign a certificate request:

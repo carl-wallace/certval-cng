@@ -208,7 +208,7 @@ fn cng_hkdf(kdf: KdfAlgorithm, ikm: &[u8], info: &[u8], len: usize) -> Result<Ze
 /// AES key wrap (RFC 3394) by CNG: `cek` exported under `kek` as `BCRYPT_AES_WRAP_KEY_BLOB`. The
 /// wrapping key must be in AES's default chaining mode, CBC: CNG refuses the export under an
 /// ECB-mode key (`STATUS_INVALID_PARAMETER`), though the wrap uses no chaining mode of its own.
-fn cng_aes_key_wrap(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn cng_aes_key_wrap(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>> {
     use windows_sys::Win32::Security::Cryptography::{BCryptExportKey, BCRYPT_AES_WRAP_KEY_BLOB};
     let kek = symmetric_key(BCRYPT_AES_CBC_ALG_HANDLE, kek)?;
     let cek_key = symmetric_key(BCRYPT_AES_CBC_ALG_HANDLE, cek)?;
@@ -594,62 +594,71 @@ impl EncryptKeyTransport for CngCrypto {
         spki: &SubjectPublicKeyInfoOwned,
         cek: &[u8],
     ) -> Result<Vec<u8>> {
-        let hash = oaep_hash(alg)?;
-        let blob = rsa_public_blob(spki, Padding::Pkcs1).ok_or(Error::Unrecognized)?;
-        let key = import_rsa(&blob).ok_or(Error::Unrecognized)?;
-        let (info, flag) = key_transport_padding(hash);
-        let info_ptr: *const core::ffi::c_void = if hash.is_some() {
-            (&info as *const BCRYPT_OAEP_PADDING_INFO).cast()
-        } else {
-            std::ptr::null()
-        };
-        let mut needed = 0u32;
-        // SAFETY: the key is live and the padding info outlives the call; with no output buffer,
-        // BCrypt reports the length the encrypted key needs, the modulus's.
-        let status = unsafe {
-            BCryptEncrypt(
-                key.handle(),
-                cek.as_ptr(),
-                len32(cek)?,
-                info_ptr,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                0,
-                &mut needed,
-                flag,
-            )
-        };
-        if !succeeded(status) {
-            debug!("BCrypt declined key transport: {status:#010x}");
-            return Err(Error::Unrecognized);
-        }
-        let mut output = vec![0u8; needed as usize];
-        let mut written = 0u32;
-        // SAFETY: as above, and BCrypt writes at most the output's length, reporting how many
-        // octets.
-        let status = unsafe {
-            BCryptEncrypt(
-                key.handle(),
-                cek.as_ptr(),
-                len32(cek)?,
-                info_ptr,
-                std::ptr::null_mut(),
-                0,
-                output.as_mut_ptr(),
-                len32(&output)?,
-                &mut written,
-                flag,
-            )
-        };
-        if !succeeded(status) {
-            debug!("BCrypt declined key transport: {status:#010x}");
-            return Err(Error::Unrecognized);
-        }
-        output.truncate(written as usize);
-        trace!("CNG performed key transport with {alg:?}");
-        Ok(output)
+        rsa_encrypt(alg, spki, cek)
     }
+}
+
+/// Encrypts `cek` to the `rsaEncryption` key in `spki` with `alg`, by BCrypt.
+pub(crate) fn rsa_encrypt(
+    alg: KeyTransportAlgorithm,
+    spki: &SubjectPublicKeyInfoOwned,
+    cek: &[u8],
+) -> Result<Vec<u8>> {
+    let hash = oaep_hash(alg)?;
+    let blob = rsa_public_blob(spki, Padding::Pkcs1).ok_or(Error::Unrecognized)?;
+    let key = import_rsa(&blob).ok_or(Error::Unrecognized)?;
+    let (info, flag) = key_transport_padding(hash);
+    let info_ptr: *const core::ffi::c_void = if hash.is_some() {
+        (&info as *const BCRYPT_OAEP_PADDING_INFO).cast()
+    } else {
+        std::ptr::null()
+    };
+    let mut needed = 0u32;
+    // SAFETY: the key is live and the padding info outlives the call; with no output buffer,
+    // BCrypt reports the length the encrypted key needs, the modulus's.
+    let status = unsafe {
+        BCryptEncrypt(
+            key.handle(),
+            cek.as_ptr(),
+            len32(cek)?,
+            info_ptr,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+            flag,
+        )
+    };
+    if !succeeded(status) {
+        debug!("BCrypt declined key transport: {status:#010x}");
+        return Err(Error::Unrecognized);
+    }
+    let mut output = vec![0u8; needed as usize];
+    let mut written = 0u32;
+    // SAFETY: as above, and BCrypt writes at most the output's length, reporting how many
+    // octets.
+    let status = unsafe {
+        BCryptEncrypt(
+            key.handle(),
+            cek.as_ptr(),
+            len32(cek)?,
+            info_ptr,
+            std::ptr::null_mut(),
+            0,
+            output.as_mut_ptr(),
+            len32(&output)?,
+            &mut written,
+            flag,
+        )
+    };
+    if !succeeded(status) {
+        debug!("BCrypt declined key transport: {status:#010x}");
+        return Err(Error::Unrecognized);
+    }
+    output.truncate(written as usize);
+    trace!("CNG performed key transport with {alg:?}");
+    Ok(output)
 }
 
 /// A BCrypt key pair or public key, destroyed when dropped.
@@ -778,9 +787,7 @@ impl EncryptKeyAgreement for CngCrypto {
         ukm: Option<&[u8]>,
         cek: &[u8],
     ) -> Result<KeyAgreeOutput> {
-        let (curve, mut blob) = ecc_public_blob(spki).ok_or(Error::Unrecognized)?;
-        blob[..4].copy_from_slice(&ecdh_magic(curve).to_le_bytes());
-        let (ephemeral_public_key, z) = bcrypt_ecdh(curve, &blob).ok_or(Error::Unrecognized)?;
+        let (ephemeral_public_key, z) = ecdh(spki)?;
         let encrypted_key = wrap_with_ecdh_secret(alg, wrap, &z, ukm, cek)?;
         trace!("CNG performed key agreement with {alg:?} and {wrap:?}");
         Ok(KeyAgreeOutput {
@@ -817,6 +824,14 @@ impl Drop for NcryptSecret {
 
 /// `BCRYPT_ECDH_PUBLIC_*_MAGIC` for a curve: an ECDH public key blob is laid out as an ECDSA one,
 /// with a magic of its own.
+/// Ephemeral-static ECDH with the EC key in `spki`, on P-256, P-384 or P-521, by BCrypt: the
+/// ephemeral public key, an uncompressed SEC1 point, and the shared secret.
+pub(crate) fn ecdh(spki: &SubjectPublicKeyInfoOwned) -> Result<(Vec<u8>, Zeroizing<Vec<u8>>)> {
+    let (curve, mut blob) = ecc_public_blob(spki).ok_or(Error::Unrecognized)?;
+    blob[..4].copy_from_slice(&ecdh_magic(curve).to_le_bytes());
+    bcrypt_ecdh(curve, &blob).ok_or(Error::Unrecognized)
+}
+
 fn ecdh_magic(curve: Curve) -> u32 {
     match curve {
         Curve::P256 => BCRYPT_ECDH_PUBLIC_P256_MAGIC,

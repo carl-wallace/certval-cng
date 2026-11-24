@@ -25,7 +25,7 @@ default = []
 pqc = ["certval/pqc", "certval-cms?/pqc"]
 # Implements certval-cms's content encryption and decryption and key transport by BCrypt, and
 # recipient and signing credentials over NCrypt keys, including those in the certificate store.
-cms = ["dep:certval-cms", "dep:cms", "dep:pkcs8", "dep:x509-cert", "dep:zeroize"]
+cms = ["dep:certval-cms", "dep:cms", "dep:kdf", "dep:pkcs8", "dep:rsa", "dep:sha2", "dep:x509-cert", "dep:zeroize"]
 
 [dependencies]
 certval = { version = "0.2.0-rc.3", default-features = false }
@@ -38,7 +38,14 @@ log = "0.4.33"
 
 # Under the `cms` feature.
 certval-cms = { version = "0.1.0-rc.1", optional = true }
-cms = { version = "=0.3.0-rc.2", optional = true }
+# cms's ASN.1 types, and its builder traits, which CngKeyEncryptor, CngKeyAgreement and CngKeyWrap
+# implement so that cms's own recipient builders perform their key management through CNG; rsa for
+# the RandomizedEncryptor trait cms's key transport builder takes; and cms's X9.63 KDF, with kdf and
+# sha2, for the key agreement, CNG having no X9.63 KDF.
+cms = { version = "=0.3.0-rc.2", features = ["builder"], optional = true }
+kdf = { version = "0.1.0", optional = true }
+rsa = { version = "0.10.0", default-features = false, optional = true }
+sha2 = { version = "0.11.0", default-features = false, optional = true }
 pkcs8 = { version = "0.11.0", optional = true }
 x509-cert = { version = "0.3.0", default-features = false, optional = true }
 zeroize = { version = "1.8.1", optional = true }

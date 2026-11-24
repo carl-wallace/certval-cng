@@ -187,6 +187,7 @@ dependencies = [
  "der",
  "elliptic-curve",
  "getrandom",
+ "kdf",
  "log",
  "ml-dsa",
  "ml-kem",
